@@ -1,0 +1,245 @@
+/*
+Descarte Certo - Single-file React component (DescarteCerto_WebApp.jsx)
+
+Instruções rápidas para rodar:
+1) Crie um projeto com Vite (recomendado):
+   npm create vite@latest descarte-certo -- --template react
+   cd descarte-certo
+2) Instale dependências:
+   npm install react-leaflet leaflet
+   npm install -D tailwindcss postcss autoprefixer
+   npx tailwindcss init -p
+3) Configure Tailwind (tailwind.config.js) com:
+   module.exports = { content: ["./index.html","./src/**/*.{js,jsx,ts,tsx}"], theme: { extend: {} }, plugins: [], }
+4) Adicione as diretivas no src/index.css:
+   @tailwind base; @tailwind components; @tailwind utilities;
+5) Substitua src/App.jsx pelo conteúdo deste arquivo (ou importe o componente aqui).
+6) Importe o CSS do Leaflet (no index.css ou no App.jsx):
+   import 'leaflet/dist/leaflet.css';
+7) Rode:
+   npm run dev
+
+Observações:
+- Este componente usa dados locais (localStorage) como "backend" simples. Você pode trocar por uma API real posteriormente.
+- Usa a API pública do Nominatim para geocodificação quando o usuário faz uma pesquisa (sem chave de API). Para produção, recomenda-se um serviço com rate-limit ou um backend próprio.
+*/
+
+import React, { useEffect, useState, useRef } from 'react';
+import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
+
+// Fix default icon issue in some bundlers
+delete L.Icon.Default.prototype._getIconUrl;
+L.Icon.Default.mergeOptions({
+  iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.3/images/marker-icon-2x.png',
+  iconUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.3/images/marker-icon.png',
+  shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.3/images/marker-shadow.png',
+});
+
+// Small helper to center map from outside
+function Recenter({ position }) {
+  const map = useMap();
+  useEffect(() => {
+    if (position) map.setView(position, 15);
+  }, [position, map]);
+  return null;
+}
+
+const SAMPLE_POINTS = [
+  { id: 1, name: 'EcoPonto Central', lat: -23.55052, lng: -46.633308, types: ['papel', 'plastico'], notes: 'Aberto 8h-18h' },
+  { id: 2, name: 'Ponto Reciclagem Bairro Verde', lat: -23.552, lng: -46.64, types: ['metal', 'vidro'], notes: 'Coleta semanal' },
+];
+
+function persistPoints(points) {
+  localStorage.setItem('ecopoints', JSON.stringify(points));
+}
+function loadPoints() {
+  const raw = localStorage.getItem('ecopoints');
+  if (!raw) return SAMPLE_POINTS;
+  try {
+    return JSON.parse(raw);
+  } catch (e) {
+    return SAMPLE_POINTS;
+  }
+}
+
+export default function DescarteCertoWebApp() {
+  const [points, setPoints] = useState(() => loadPoints());
+  const [query, setQuery] = useState('');
+  const [searching, setSearching] = useState(false);
+  const [center, setCenter] = useState([-23.55052, -46.633308]);
+  const [selectedPoint, setSelectedPoint] = useState(null);
+  const nameRef = useRef();
+  const latRef = useRef();
+  const lngRef = useRef();
+  const typesRef = useRef();
+  const notesRef = useRef();
+
+  useEffect(() => {
+    persistPoints(points);
+  }, [points]);
+
+  useEffect(() => {
+    // try to center on user's location (graceful)
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => setCenter([pos.coords.latitude, pos.coords.longitude]),
+        () => {},
+        { timeout: 3000 }
+      );
+    }
+  }, []);
+
+  const handleSearch = async (e) => {
+    e.preventDefault();
+    if (!query) return;
+    setSearching(true);
+    try {
+      const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}`;
+      const res = await fetch(url, { headers: { 'Accept-Language': 'pt-BR' } });
+      const data = await res.json();
+      if (data && data.length) {
+        const { lat, lon, display_name } = data[0];
+        setCenter([parseFloat(lat), parseFloat(lon)]);
+      } else {
+        alert('Local não encontrado. Tente outro termo ou endereço.');
+      }
+    } catch (err) {
+      console.error(err);
+      alert('Erro na busca. Tente novamente.');
+    }
+    setSearching(false);
+  };
+
+  const handleAddPoint = (e) => {
+    e.preventDefault();
+    const name = nameRef.current.value.trim();
+    const lat = parseFloat(latRef.current.value);
+    const lng = parseFloat(lngRef.current.value);
+    const types = typesRef.current.value.split(',').map(t => t.trim()).filter(Boolean);
+    const notes = notesRef.current.value.trim();
+    if (!name || Number.isNaN(lat) || Number.isNaN(lng)) {
+      alert('Preencha nome e coordenadas válidas.');
+      return;
+    }
+    const newPoint = { id: Date.now(), name, lat, lng, types, notes };
+    const updated = [...points, newPoint];
+    setPoints(updated);
+    persistPoints(updated);
+    nameRef.current.value = '';
+    latRef.current.value = '';
+    lngRef.current.value = '';
+    typesRef.current.value = '';
+    notesRef.current.value = '';
+    setCenter([lat, lng]);
+  };
+
+  const handleLocateMe = () => {
+    if (!navigator.geolocation) return alert('Geolocalização não disponível no seu navegador.');
+    navigator.geolocation.getCurrentPosition((pos) => {
+      const p = [pos.coords.latitude, pos.coords.longitude];
+      setCenter(p);
+    }, () => alert('Não foi possível obter sua localização.'));
+  };
+
+  const filteredPoints = points.filter(p => {
+    if (!query) return true;
+    const q = query.toLowerCase();
+    return p.name.toLowerCase().includes(q) || (p.types || []).join(' ').toLowerCase().includes(q);
+  });
+
+  return (
+    <div className="min-h-screen bg-gray-50 p-4 md:p-8">
+      <div className="max-w-6xl mx-auto bg-white shadow-md rounded-2xl overflow-hidden">
+        <header className="p-4 md:p-6 border-b">
+          <h1 className="text-xl md:text-2xl font-semibold">Descarte Certo</h1>
+          <p className="text-sm text-gray-600 mt-1">Encontre pontos de descarte e aprenda a separar resíduos — projeto de extensão (ADS)</p>
+        </header>
+
+        <main className="md:flex">
+          <section className="md:w-1/3 p-4 border-r">
+            <form onSubmit={handleSearch} className="flex gap-2">
+              <input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Buscar endereço, bairro ou tipo (papel, vidro...)"
+                className="flex-1 p-2 border rounded"
+                aria-label="buscar local"
+              />
+              <button type="submit" className="px-3 py-2 bg-blue-600 text-white rounded" disabled={searching}>Buscar</button>
+            </form>
+
+            <div className="mt-3 flex gap-2">
+              <button onClick={handleLocateMe} className="flex-1 py-2 border rounded">Localizar-me</button>
+              <button onClick={() => { setQuery(''); setCenter([-23.55052, -46.633308]); }} className="py-2 px-3 border rounded">Reset</button>
+            </div>
+
+            <div className="mt-4">
+              <h2 className="font-medium">Pontos próximos ({filteredPoints.length})</h2>
+              <ul className="mt-2 space-y-2 max-h-64 overflow-auto">
+                {filteredPoints.map(p => (
+                  <li key={p.id} className="p-2 border rounded hover:bg-gray-50 cursor-pointer" onClick={() => { setCenter([p.lat, p.lng]); setSelectedPoint(p.id); }}>
+                    <div className="flex justify-between items-start">
+                      <div>
+                        <div className="font-semibold">{p.name}</div>
+                        <div className="text-xs text-gray-600">Tipos: {(p.types||[]).join(', ')}</div>
+                      </div>
+                      <div className="text-xs text-gray-500">{p.notes}</div>
+                    </div>
+                  </li>
+                ))}
+                {filteredPoints.length === 0 && <li className="text-sm text-gray-500">Nenhum ponto encontrado.</li>}
+              </ul>
+            </div>
+
+            <div className="mt-6">
+              <h3 className="font-medium">Adicionar ponto</h3>
+              <form onSubmit={handleAddPoint} className="mt-2 space-y-2">
+                <input ref={nameRef} placeholder="Nome do ponto" className="w-full p-2 border rounded" />
+                <div className="flex gap-2">
+                  <input ref={latRef} placeholder="Latitude" className="flex-1 p-2 border rounded" />
+                  <input ref={lngRef} placeholder="Longitude" className="flex-1 p-2 border rounded" />
+                </div>
+                <input ref={typesRef} placeholder="Tipos (separados por vírgula)" className="w-full p-2 border rounded" />
+                <input ref={notesRef} placeholder="Observações" className="w-full p-2 border rounded" />
+                <div className="flex gap-2">
+                  <button type="submit" className="flex-1 py-2 bg-green-600 text-white rounded">Adicionar</button>
+                  <button type="button" onClick={() => { localStorage.removeItem('ecopoints'); setPoints(SAMPLE_POINTS); }} className="py-2 px-3 border rounded">Resetar dados</button>
+                </div>
+              </form>
+            </div>
+
+          </section>
+
+          <section className="md:flex-1 p-4">
+            <div className="h-[60vh] rounded">
+              <MapContainer center={center} zoom={13} style={{ height: '100%', borderRadius: 8 }}>
+                <TileLayer
+                  attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+                  url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                />
+                <Recenter position={center} />
+                {points.map(p => (
+                  <Marker key={p.id} position={[p.lat, p.lng]}>
+                    <Popup>
+                      <div className="text-sm">
+                        <strong>{p.name}</strong>
+                        <div>Tipos: {(p.types||[]).join(', ')}</div>
+                        <div className="text-xs text-gray-600">{p.notes}</div>
+                      </div>
+                    </Popup>
+                  </Marker>
+                ))}
+              </MapContainer>
+            </div>
+
+            <div className="mt-4 text-xs text-gray-500">Dica: clique em um ponto na lista para centralizar no mapa. Para produção, conecte este frontend a uma API para gerenciar pontos autenticados.</div>
+          </section>
+        </main>
+
+        <footer className="p-4 text-right text-xs text-gray-500">Desenvolvido como protótipo para projeto de extensão - Curso ADS</footer>
+      </div>
+    </div>
+  );
+}
